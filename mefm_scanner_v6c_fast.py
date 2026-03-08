@@ -1,6 +1,6 @@
 # ============================================================
-# MEFM-Pro デイリースキャナー v6c（GitHub Actions + LINE通知版）
-# 毎営業日の夜（15時以降）に自動実行
+# MEFM-Pro デイリースキャナー v6c（GitHub Actions + Colab 共用版）
+# 毎営業日の夜（15時以降）に実行
 #
 # v6c条件：
 #   エントリー条件 → v6aと同一（7ステップ + RSI>50）
@@ -12,9 +12,11 @@
 # 機能①：新規買いシグナル検出
 # 機能②：保有中ポジションの売りタイミング判定
 # 機能③：LINE通知（Messaging API）
+# 機能④：GitHub Actions / Colab 自動判定
 # ============================================================
 
 import os
+import sys
 import requests
 import pandas as pd
 import numpy as np
@@ -24,11 +26,54 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # ============================================================
-# LINE設定（GitHub SecretsまたはColabの環境変数から取得）
+# 実行環境の自動判定
 # ============================================================
 
-LINE_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-USER_ID    = os.getenv("LINE_USER_ID")
+def is_colab():
+    try:
+        import google.colab
+        return True
+    except ImportError:
+        return False
+
+RUNNING_ON_COLAB = is_colab()
+
+if RUNNING_ON_COLAB:
+    print("🖥️  実行環境: Google Colab")
+else:
+    print("⚙️  実行環境: GitHub Actions")
+
+# ============================================================
+# LINE設定（環境に応じて自動切替）
+# ============================================================
+
+if RUNNING_ON_COLAB:
+    # ── Colab用：ここに直接貼り付け ──────────────────────
+    LINE_TOKEN = "ここにChannel_Access_Tokenを貼り付け"
+    USER_ID    = "ここにUSER_IDを貼り付け"
+    # ────────────────────────────────────────────────────────
+else:
+    # GitHub Actions用：Secretsから自動取得
+    LINE_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    USER_ID    = os.getenv("LINE_USER_ID")
+
+# ============================================================
+# 休場日チェック
+# ============================================================
+
+def check_market_day():
+    """土日・休場日の判定と警告"""
+    today = datetime.today()
+    weekday = today.weekday()  # 0=月曜 〜 6=日曜
+
+    if weekday >= 5:  # 土日
+        day_name = "土曜日" if weekday == 5 else "日曜日"
+        print(f"⚠️  本日は{day_name}です（市場休場）")
+        print(f"   直近の確定データ（金曜終値）でスキャンします。")
+        print(f"   シグナルが出た場合は月曜朝に再確認してから買ってください。")
+        print()
+        return False  # 休場
+    return True  # 営業日
 
 # ============================================================
 # ★保有中のポジションをここに入力★
@@ -139,8 +184,7 @@ def get_hold_days(nk_close, j):
 def business_days_between(start_str, end_str):
     start = datetime.strptime(start_str, "%Y-%m-%d")
     end   = datetime.strptime(end_str,   "%Y-%m-%d")
-    days  = 0
-    cur   = start
+    days  = 0; cur = start
     while cur <= end:
         if cur.weekday() < 5:
             days += 1
@@ -153,7 +197,15 @@ def business_days_between(start_str, end_str):
 
 def send_line(message):
     if not LINE_TOKEN or not USER_ID:
-        print("  ⚠️  LINE未設定・スキップ（環境変数を確認してください）")
+        print("  ⚠️  LINE未設定・スキップ")
+        if RUNNING_ON_COLAB:
+            print("     → Colab版：LINE_TOKEN と USER_ID を直接貼り付けてください")
+        else:
+            print("     → GitHub版：Secrets に LINE_CHANNEL_ACCESS_TOKEN / LINE_USER_ID を登録してください")
+        return
+    # Colabで設定例文のままの場合はスキップ
+    if "ここに" in LINE_TOKEN or "ここに" in USER_ID:
+        print("  ⚠️  LINE未設定（サンプル文のまま）・スキップ")
         return
     try:
         r = requests.post(
@@ -216,7 +268,7 @@ def check_sell(positions):
                 print(f"     → 本日または明日の寄り付きで売ってください")
                 alert = f"🎯 利確タイミング\n{pos['name']}({pos['ticker']})\n現在値{cur_price:,.0f}円 → 利確目標{pos['tp_price']:,}円到達"
             elif cur_low <= pos["sl_price"]:
-                print(f"  🚨【損切りタイミング】本日安値が損切りラインを下回りました")
+                print(f"  🚨【損切りタイミング】安値が損切りラインを下回りました")
                 print(f"     → 逆指値が機能していれば自動決済済み")
                 alert = f"🚨 損切りタイミング\n{pos['name']}({pos['ticker']})\n安値{cur_low:,.0f}円 → 損切りライン{pos['sl_price']:,}円割れ"
             elif days_left <= 0:
@@ -224,7 +276,7 @@ def check_sell(positions):
                 print(f"     現在損益: {pnl:+.2f}%")
                 alert = f"⏰ 期間満了\n{pos['name']}({pos['ticker']})\n{pos['hold_days']}日経過 → 明日売り\n損益{pnl:+.2f}%"
             elif days_left == 1:
-                print(f"  ⚠️  明日が最終保有日 → 明日の終値で売り  損益: {pnl:+.2f}%")
+                print(f"  ⚠️  明日が最終保有日 → 明日終値で売り  損益: {pnl:+.2f}%")
                 alert = f"⚠️ 明日が最終保有日\n{pos['name']}({pos['ticker']})\n損益{pnl:+.2f}%"
             else:
                 emoji = "✅" if pnl > 0 else "⚠️"
@@ -306,8 +358,12 @@ def scan_buy(ticker, nk_close, hold_days, market_mode):
 # メイン実行
 # ============================================================
 
-today_str = datetime.today().strftime("%Y年%m月%d日")
+today_str  = datetime.today().strftime("%Y年%m月%d日")
+is_weekday = check_market_day()
+
 print(f"MEFM-Pro スキャナー v6c  {today_str}")
+if not is_weekday:
+    print("（土日実行：金曜終値データでスキャン。シグナルは月曜朝に再確認）")
 print()
 
 print("日経データ取得中...")
@@ -315,7 +371,8 @@ nk_raw=yf.download("^N225", start=NK_START, end=END,
                    interval="1d", progress=False, auto_adjust=True)
 if isinstance(nk_raw.columns,pd.MultiIndex): nk_raw.columns=[col[0] for col in nk_raw.columns]
 nk_close=nk_raw["Close"]
-print(f"取得完了\n")
+nk_date = str(nk_raw.index[-1].date())
+print(f"取得完了（最新データ日付：{nk_date}）\n")
 
 nk_i       = len(nk_close)-1
 nk_price   = float(nk_close.iloc[nk_i])
@@ -325,8 +382,9 @@ nk_ok      = nk_ma20 > nk_ma60
 hold_days, market_mode = get_hold_days(nk_close, nk_i)
 
 print("="*65)
-print("  📈 本日の市場環境（STEP7 + v6c保有期間判定）")
+print("  📈 市場環境（STEP7 + v6c保有期間判定）")
 print("="*65)
+print(f"  データ日 : {nk_date}")
 print(f"  日経終値 : {nk_price:>10,.0f}円")
 print(f"  20MA     : {nk_ma20:>10,.0f}円")
 print(f"  60MA     : {nk_ma60:>10,.0f}円")
@@ -402,6 +460,7 @@ else:
         print(f"  4. HOLDING_POSITIONSに追加（保有期間：{hold_days}日）")
         print()
         print("  ⚠️  前日高値を超えていなければ買わない")
+        print("  ⚠️  土日シグナルは月曜朝に再確認してから買う")
         print("  ⚠️  投資は自己責任で")
         print("="*65)
 
@@ -414,6 +473,8 @@ print(f"\n  実行完了: {datetime.today().strftime('%Y-%m-%d %H:%M')}")
 print("\n" + "="*65)
 print("  📨 LINE通知送信中...")
 print("="*65)
+
+weekend_note = "\n⚠️土日データ：月曜朝に再確認してから買う" if not is_weekday else ""
 
 # 売りアラートがあれば先に送信
 if sell_alerts:
@@ -428,12 +489,14 @@ if not nk_ok:
         f"日経フィルターNG\n"
         f"20MA {nk_ma20:,.0f} < 60MA {nk_ma60:,.0f}\n"
         f"本日はエントリー見送り"
+        f"{weekend_note}"
     )
 elif not signals:
     send_line(
         f"📭 MEFM {today_str}\n"
         f"本日のシグナル：なし\n"
         f"相場：{market_mode}"
+        f"{weekend_note}"
     )
 else:
     text  = f"📈 MEFMシグナル {today_str}\n"
@@ -450,4 +513,5 @@ else:
         )
     text += "※翌朝寄り付きで買いライン超えを確認してから買う\n"
     text += "※投資は自己責任で"
+    text += weekend_note
     send_line(text)
