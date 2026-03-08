@@ -6,7 +6,12 @@
 # 効果  ：3〜5分 → 30〜60秒に短縮
 # ============================================================
 
-import pandas as pd
+import os
+
+LINE_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+USER_ID = os.getenv("LINE_USER_ID")
+
+import pandas as pd 
 import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
