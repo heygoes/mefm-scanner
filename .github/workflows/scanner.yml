@@ -18,7 +18,7 @@ jobs:
       - name: Install libraries
         run: pip install -r requirements.txt
       - name: Run scanner
-        run: python mefm_scanner_v6c_fast.py
+        run: python mefm_scanner_v9.py
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
