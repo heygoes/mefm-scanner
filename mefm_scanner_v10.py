@@ -1,15 +1,13 @@
 # ============================================================
 # MEFM スキャナー v10
-# 全戦略統合版
+# 全戦略統合版（材料株フォロー追加・修正済み）
 #
 # 毎日スキャンする戦略
-# ① MEFM A4（スイング・既存）
-# ② 決算プレイ候補（J-Quants不要・yfinance版）
+# ① MEFM A4（スイング）
+# ② 決算プレイ候補（yfinance版）
 # ③ 自社株買い候補（TDnetスクレイピング）
-# ④ 52週高値ブレイク候補（新規追加）
-#
-# LINE通知に全戦略をまとめて送信
-# 紙トレード記録帳に入力する銘柄を毎日提示
+# ④ 52週高値ブレイク候補
+# ⑤ 材料株フォロー（出来高5倍+5%→3日保有）
 # ============================================================
 
 import pandas as pd
@@ -38,7 +36,7 @@ except ImportError:
     import yfinance as yf
 
 # ============================================================
-# マクロテーブル・セクター（v9から継承）
+# マクロテーブル・セクター
 # ============================================================
 MACRO_TABLE = {
     "7011.T":"GO","7012.T":"GO","7013.T":"GO","6301.T":"GO","6326.T":"GO",
@@ -136,10 +134,10 @@ def calc_adx(df, p=14):
     dm_n = (l.shift(1)-l).clip(lower=0)
     dm_p = dm_p.where(dm_p>dm_n,0)
     dm_n = dm_n.where(dm_n>dm_p,0)
-    atr14  = tr.ewm(alpha=1/p,adjust=False).mean()
-    di_p   = 100*dm_p.ewm(alpha=1/p,adjust=False).mean()/(atr14+1e-9)
-    di_n   = 100*dm_n.ewm(alpha=1/p,adjust=False).mean()/(atr14+1e-9)
-    dx     = (100*(di_p-di_n).abs()/(di_p+di_n+1e-9))
+    atr14 = tr.ewm(alpha=1/p,adjust=False).mean()
+    di_p  = 100*dm_p.ewm(alpha=1/p,adjust=False).mean()/(atr14+1e-9)
+    di_n  = 100*dm_n.ewm(alpha=1/p,adjust=False).mean()/(atr14+1e-9)
+    dx    = 100*(di_p-di_n).abs()/(di_p+di_n+1e-9)
     return dx.ewm(alpha=1/p,adjust=False).mean()
 
 def calc_rsi(df, p=14):
@@ -161,7 +159,6 @@ def send_line(msg, token):
     if not token:
         print("[LINE] トークン未設定")
         return
-    # Push通知（チャネルアクセストークン方式）
     if LINE_CHANNEL_ACCESS_TOKEN and LINE_USER_ID:
         try:
             requests.post(
@@ -170,14 +167,12 @@ def send_line(msg, token):
                     "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
                     "Content-Type": "application/json"
                 },
-                json={
-                    "to": LINE_USER_ID,
-                    "messages": [{"type":"text","text":msg}]
-                }
+                json={"to": LINE_USER_ID,
+                      "messages": [{"type":"text","text":msg}]}
             )
             return
-        except: pass
-    # Notify方式（フォールバック）
+        except:
+            pass
     requests.post(
         "https://notify-api.line.me/api/notify",
         headers={"Authorization": f"Bearer {token}"},
@@ -185,7 +180,7 @@ def send_line(msg, token):
     )
 
 # ============================================================
-# ① MEFM A4 スキャン（v9から継承）
+# ① MEFM A4 スキャン
 # ============================================================
 def scan_mefm(raw, nk_c):
     signals = []
@@ -193,13 +188,12 @@ def scan_mefm(raw, nk_c):
         try:
             df = raw[ticker].dropna(how="all")
             if len(df) < 200: continue
-        except: continue
-
+        except:
+            continue
         atr=calc_atr(df); bbw=calc_bbw(df)
         adx=calc_adx(df); rsi=calc_rsi(df)
         c=df["Close"]; nk=nk_c.reindex(df.index,method="ffill")
         i=-1
-
         cur_c = float(c.iloc[i])
         ma5   = float(c.iloc[i-5:i].mean())
         ma20  = float(c.iloc[i-20:i].mean())
@@ -215,7 +209,6 @@ def scan_mefm(raw, nk_c):
         adx_n = float(adx.iloc[i])
         nk_m20= float(nk.iloc[i-20:i].mean())
         nk_m60= float(nk.iloc[i-60:i].mean())
-
         if cur_c<=ma100: continue
         if not(ma5>ma20>ma60): continue
         if atr_mx<=0 or bbw_mx<=0: continue
@@ -224,38 +217,22 @@ def scan_mefm(raw, nk_c):
         if not(-0.06<=dev<=-0.003): continue
         if rsi_n<=55: continue
         if nk_m20<=nk_m60: continue
-
         macro  = MACRO_TABLE.get(ticker,"CAUTION")
         sector = SECTOR_NAME.get(ticker,"その他")
         signals.append({
-            "ticker": ticker,
-            "name":   get_name(ticker),
-            "macro":  macro,
-            "sector": sector,
-            "price":  round(cur_c,0),
-            "tp":     round(cur_c*1.07,0),
-            "sl":     round(cur_c-atr_n*1.5,0),
-            "rsi":    round(rsi_n,1),
-            "dev":    round(dev*100,1),
-            "strategy": "MEFM",
+            "ticker":ticker,"name":get_name(ticker),
+            "macro":macro,"sector":sector,
+            "price":round(cur_c,0),"tp":round(cur_c*1.07,0),
+            "sl":round(cur_c-atr_n*1.5,0),
+            "rsi":round(rsi_n,1),"dev":round(dev*100,1),
+            "strategy":"MEFM",
         })
     return signals
 
 # ============================================================
 # ② 決算プレイ候補スキャン
-#    直近1〜3日以内に大きく上昇した銘柄を検出
-#    （上方修正の代替：急騰＋出来高急増）
 # ============================================================
 def scan_earnings_proxy(raw, nk_c):
-    """
-    決算プレイの代替スクリーニング
-    条件：
-    - 直近3日間で+5%以上の急騰
-    - 出来高が20日平均の2倍以上（決算反応らしさ）
-    - 100日MA上（上昇トレンド）
-    - PASSは除外
-    注意：実際の上方修正確認はTDnetで手動確認が必要
-    """
     signals = []
     for ticker in TICKERS:
         macro = MACRO_TABLE.get(ticker,"CAUTION")
@@ -263,104 +240,72 @@ def scan_earnings_proxy(raw, nk_c):
         try:
             df = raw[ticker].dropna(how="all")
             if len(df) < 110: continue
-        except: continue
-
-        c   = df["Close"]
-        vol = df["Volume"]
-        i   = -1
-
+        except:
+            continue
+        c=df["Close"]; vol=df["Volume"]
+        i=-1
         cur_c   = float(c.iloc[i])
         c_3d    = float(c.iloc[i-3])
         ma100   = float(c.iloc[i-100:i].mean())
         vol_now = float(vol.iloc[i-1])
         vol_avg = float(vol.iloc[i-20:i-1].mean())
-
         if ma100<=0 or vol_avg<=0: continue
-        if cur_c <= ma100: continue  # MA100上
-
+        if cur_c <= ma100: continue
         ret_3d = (cur_c - c_3d) / c_3d
-        if ret_3d < 0.05: continue  # 3日で+5%以上
-        if vol_now < vol_avg * 2.0: continue  # 出来高2倍以上
-
+        if ret_3d < 0.05: continue
+        if vol_now < vol_avg * 2.0: continue
         sector = SECTOR_NAME.get(ticker,"その他")
         signals.append({
-            "ticker":   ticker,
-            "name":     get_name(ticker),
-            "macro":    macro,
-            "sector":   sector,
-            "price":    round(cur_c,0),
-            "ret_3d":   round(ret_3d*100,1),
+            "ticker":ticker,"name":get_name(ticker),
+            "macro":macro,"sector":sector,
+            "price":round(cur_c,0),
+            "ret_3d":round(ret_3d*100,1),
             "vol_ratio":round(vol_now/vol_avg,1),
-            "tp":       round(cur_c*1.07,0),
-            "sl":       None,
-            "strategy": "決算プレイ候補",
-            "note":     "★TDnetで上方修正を要確認",
+            "tp":round(cur_c*1.07,0),"sl":None,
+            "strategy":"決算プレイ候補",
+            "note":"★TDnetで上方修正を要確認",
         })
     return signals
 
 # ============================================================
 # ③ 自社株買い候補スキャン
-#    TDnetからIR情報を取得（自己株取得の開示）
 # ============================================================
 def scan_buyback():
-    """
-    TDnetから自己株式取得の開示情報を取得
-    直近の「自己株式取得」発表を検索
-    """
     signals = []
     try:
-        today = datetime.now()
-        # TDnetのRSS/JSONフィード
         url = "https://www.release.tdnet.info/inbs/I_list_001_99999.html"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code != 200:
             return signals
-
         from html.parser import HTMLParser
-
         class TDnetParser(HTMLParser):
             def __init__(self):
                 super().__init__()
-                self.results = []
-                self.current = {}
-                self.in_td = False
-                self.td_count = 0
-                self.in_row = False
-
+                self.results=[]; self.current={}
+                self.in_td=False; self.td_count=0; self.in_row=False
             def handle_starttag(self, tag, attrs):
-                if tag == "tr":
-                    self.in_row = True
-                    self.current = {}
-                    self.td_count = 0
-                if tag == "td" and self.in_row:
-                    self.in_td = True
-
+                if tag=="tr":
+                    self.in_row=True; self.current={}; self.td_count=0
+                if tag=="td" and self.in_row:
+                    self.in_td=True
             def handle_endtag(self, tag):
-                if tag == "td":
-                    self.in_td = False
-                    self.td_count += 1
-                if tag == "tr" and self.in_row:
-                    self.in_row = False
+                if tag=="td":
+                    self.in_td=False; self.td_count+=1
+                if tag=="tr" and self.in_row:
+                    self.in_row=False
                     if self.current.get("title"):
                         self.results.append(dict(self.current))
-
             def handle_data(self, data):
-                data = data.strip()
+                data=data.strip()
                 if not data or not self.in_td: return
-                if self.td_count == 0:
-                    self.current["time"] = data
-                elif self.td_count == 1:
-                    self.current["code"] = data
-                elif self.td_count == 2:
-                    self.current["company"] = data
-                elif self.td_count == 3:
-                    self.current["title"] = data
-
+                if self.td_count==0: self.current["time"]=data
+                elif self.td_count==1: self.current["code"]=data
+                elif self.td_count==2: self.current["company"]=data
+                elif self.td_count==3: self.current["title"]=data
         parser = TDnetParser()
         parser.feed(resp.text)
-
-        keywords = ["自己株式", "自社株", "株式取得", "取得開始"]
+        keywords = ["自己株式","自社株","株式取得","取得開始"]
         for item in parser.results:
             title = item.get("title","")
             if any(kw in title for kw in keywords):
@@ -370,79 +315,98 @@ def scan_buyback():
                     macro  = MACRO_TABLE.get(ticker,"CAUTION")
                     if macro == "PASS": continue
                     signals.append({
-                        "ticker":   ticker,
-                        "name":     get_name(ticker),
-                        "macro":    macro,
-                        "sector":   SECTOR_NAME.get(ticker,"その他"),
-                        "price":    None,
-                        "title":    title[:30],
-                        "tp":       None,
-                        "sl":       None,
-                        "strategy": "自社株買い",
-                        "note":     "翌日寄り買い・15日保有",
+                        "ticker":ticker,"name":get_name(ticker),
+                        "macro":macro,
+                        "sector":SECTOR_NAME.get(ticker,"その他"),
+                        "price":None,"title":title[:30],
+                        "tp":None,"sl":None,
+                        "strategy":"自社株買い",
+                        "note":"翌日寄り買い・15日保有",
                     })
     except Exception as e:
         print(f"[自社株買いスキャン] エラー: {e}")
-
     return signals
 
 # ============================================================
 # ④ 52週高値ブレイク候補スキャン
 # ============================================================
 def scan_52week(raw, nk_c):
-    """
-    52週高値（過去252日）をブレイクした銘柄を検出
-    条件：
-    - 前日終値が過去252日最高値を更新
-    - 出来高が20日平均の1.2倍以上
-    - 日経20MA > 日経60MA
-    - PASSは除外
-    """
     signals = []
     nk_m20 = float(nk_c.iloc[-20:].mean())
     nk_m60 = float(nk_c.iloc[-60:].mean())
     if nk_m20 <= nk_m60:
-        return signals  # 日経下降トレンドは全件スキップ
-
+        return signals
     for ticker in TICKERS:
         macro = MACRO_TABLE.get(ticker,"CAUTION")
         if macro == "PASS": continue
         try:
             df = raw[ticker].dropna(how="all")
             if len(df) < 260: continue
-        except: continue
-
-        c   = df["Close"]
-        vol = df["Volume"]
-        i   = -1
-
+        except:
+            continue
+        c=df["Close"]; vol=df["Volume"]
+        i=-1
         cur_c   = float(c.iloc[i])
         high_52 = float(c.iloc[i-252:i-1].max())
         vol_now = float(vol.iloc[i-1])
         vol_avg = float(vol.iloc[i-20:i-1].mean())
-
         if vol_avg <= 0: continue
-        if cur_c <= high_52: continue       # 52週高値更新していない
-        if vol_now < vol_avg * 1.2: continue # 出来高1.2倍以上
-
+        if cur_c <= high_52: continue
+        if vol_now < vol_avg * 1.2: continue
         breakout_pct = (cur_c - high_52) / high_52 * 100
         sector = SECTOR_NAME.get(ticker,"その他")
         signals.append({
-            "ticker":    ticker,
-            "name":      get_name(ticker),
-            "macro":     macro,
-            "sector":    sector,
-            "price":     round(cur_c,0),
-            "high_52":   round(high_52,0),
-            "breakout":  round(breakout_pct,1),
-            "vol_ratio": round(vol_now/vol_avg,1),
-            "tp":        round(cur_c*1.07,0),
-            "sl":        round(cur_c*0.93,0),
-            "strategy":  "52週高値",
-            "note":      f"52週高値{round(high_52,0)}を更新",
+            "ticker":ticker,"name":get_name(ticker),
+            "macro":macro,"sector":sector,
+            "price":round(cur_c,0),"high_52":round(high_52,0),
+            "breakout":round(breakout_pct,1),
+            "vol_ratio":round(vol_now/vol_avg,1),
+            "tp":round(cur_c*1.07,0),"sl":round(cur_c*0.93,0),
+            "strategy":"52週高値",
+            "note":f"52週高値{round(high_52,0)}を更新",
         })
-    # ブレイク幅が大きい順
     return sorted(signals, key=lambda x: x["breakout"], reverse=True)
+
+# ============================================================
+# ⑤ 材料株フォロー スキャン
+# ============================================================
+def scan_material(raw, nk_c):
+    signals = []
+    nk_m20 = float(nk_c.iloc[-20:].mean())
+    nk_m60 = float(nk_c.iloc[-60:].mean())
+    if nk_m20 <= nk_m60:
+        return signals
+    for ticker in TICKERS:
+        macro = MACRO_TABLE.get(ticker,"CAUTION")
+        if macro == "PASS": continue
+        try:
+            df = raw[ticker].dropna(how="all")
+            if len(df) < 25: continue
+        except:
+            continue
+        c=df["Close"]; v=df["Volume"]
+        i=-1
+        vol_avg = float(v.iloc[i-20:i-1].mean())
+        vol_now = float(v.iloc[i-1])
+        if vol_avg <= 0: continue
+        if vol_now < vol_avg * 5.0: continue
+        cur_c  = float(c.iloc[i-1])
+        prev_c = float(c.iloc[i-2])
+        if prev_c <= 0: continue
+        ret = (cur_c - prev_c) / prev_c
+        if ret < 0.05: continue
+        sector = SECTOR_NAME.get(ticker,"その他")
+        signals.append({
+            "ticker":ticker,"name":get_name(ticker),
+            "macro":macro,"sector":sector,
+            "price":round(cur_c,0),
+            "ret":round(ret*100,1),
+            "vol_ratio":round(vol_now/vol_avg,1),
+            "tp":round(cur_c*1.10,0),"sl":round(cur_c*0.93,0),
+            "strategy":"材料株",
+            "note":f"出来高{round(vol_now/vol_avg,1)}倍・当日+{round(ret*100,1)}%・3日保有",
+        })
+    return sorted(signals, key=lambda x: x["vol_ratio"], reverse=True)
 
 # ============================================================
 # 相場判断
@@ -452,7 +416,6 @@ def get_market_condition(nk_c):
     nk_m20 = float(nk_c.iloc[-20:].mean())
     nk_m60 = float(nk_c.iloc[-60:].mean())
     ret_20 = (nk_now - float(nk_c.iloc[-20])) / float(nk_c.iloc[-20]) * 100
-
     if nk_m20 > nk_m60 and ret_20 > 3:
         return "強い上昇"
     elif nk_m20 > nk_m60:
@@ -465,7 +428,7 @@ def get_market_condition(nk_c):
 # ============================================================
 # LINE通知メッセージ生成
 # ============================================================
-def build_message(today, market, mefm, earnings, buyback, w52):
+def build_message(today, market, mefm, earnings, buyback, w52, material):
     date_str = today.strftime("%m/%d(%a)")
     lines = [f"📊 MEFM v10 [{date_str}]", f"相場：{market}", ""]
 
@@ -478,7 +441,6 @@ def build_message(today, market, mefm, earnings, buyback, w52):
             lines.append(f"  現値:{s['price']} TP:{s['tp']} SL:{s['sl']}")
     else:
         lines.append("【MEFM】シグナルなし")
-
     lines.append("")
 
     # ② 決算プレイ
@@ -490,7 +452,6 @@ def build_message(today, market, mefm, earnings, buyback, w52):
             lines.append(f"  ★TDnetで上方修正を確認")
     else:
         lines.append("【決算プレイ候補】なし")
-
     lines.append("")
 
     # ③ 自社株買い
@@ -501,7 +462,6 @@ def build_message(today, market, mefm, earnings, buyback, w52):
             lines.append(f"  {s['title']}")
     else:
         lines.append("【自社株買い】発表なし")
-
     lines.append("")
 
     # ④ 52週高値
@@ -512,9 +472,20 @@ def build_message(today, market, mefm, earnings, buyback, w52):
             lines.append(f"  現値:{s['price']} ブレイク+{s['breakout']}%")
     else:
         lines.append("【52週高値】なし")
-
     lines.append("")
-    total = len(mefm_go)+len(earnings)+len(buyback)+len(w52)
+
+    # ⑤ 材料株
+    if material:
+        lines.append(f"【材料株フォロー】{len(material)}件 🔥")
+        for s in material[:3]:
+            lines.append(f"  {s['ticker']} {s['name']}")
+            lines.append(f"  当日+{s['ret']}% 出来高{s['vol_ratio']}倍")
+            lines.append(f"  翌日寄り買い・3日保有 SL:{s['sl']}")
+    else:
+        lines.append("【材料株フォロー】なし")
+    lines.append("")
+
+    total = len(mefm_go)+len(earnings)+len(buyback)+len(w52)+len(material)
     lines.append(f"合計候補：{total}件")
     lines.append("→紙トレード記録帳に入力してください")
 
@@ -541,19 +512,19 @@ def main():
     nk_raw = yf.download("^N225", period="2y", interval="1d",
                          progress=False, auto_adjust=True)
     if isinstance(nk_raw.columns, pd.MultiIndex):
-        nk_raw.columns = [col[0] for col in nk_raw.columns]
+        nk_raw.columns = [c[0] for c in nk_raw.columns]
     nk_c = nk_raw["Close"]
     print("完了")
 
-    market  = get_market_condition(nk_c)
-    mefm    = scan_mefm(raw, nk_c)
-    earnings= scan_earnings_proxy(raw, nk_c)
-    buyback = scan_buyback()
-    w52     = scan_52week(raw, nk_c)
+    market   = get_market_condition(nk_c)
+    mefm     = scan_mefm(raw, nk_c)
+    earnings = scan_earnings_proxy(raw, nk_c)
+    buyback  = scan_buyback()
+    w52      = scan_52week(raw, nk_c)
+    material = scan_material(raw, nk_c)
 
     mefm_go = [s for s in mefm if s["macro"]=="GO"]
 
-    # コンソール出力
     print(f"\n{'='*55}")
     print(f"  相場：{market}")
     print(f"{'='*55}")
@@ -561,6 +532,7 @@ def main():
     print(f"  決算プレイ候補     : {len(earnings)}件（TDnet確認要）")
     print(f"  自社株買い         : {len(buyback)}件")
     print(f"  52週高値ブレイク   : {len(w52)}件")
+    print(f"  材料株フォロー     : {len(material)}件")
     print(f"{'='*55}")
 
     if mefm_go:
@@ -571,7 +543,7 @@ def main():
                   f" RSI:{s['rsi']} 乖離:{s['dev']}%")
 
     if earnings:
-        print("\n[決算プレイ候補]（TDnetで上方修正を確認してください）")
+        print("\n[決算プレイ候補]（TDnetで上方修正を確認）")
         for s in earnings:
             print(f"  {s['ticker']} {s['name']}"
                   f" 3日+{s['ret_3d']}% 出来高{s['vol_ratio']}倍"
@@ -589,12 +561,18 @@ def main():
                   f" 現値:{s['price']} ブレイク+{s['breakout']}%"
                   f" 出来高{s['vol_ratio']}倍")
 
-    total = len(mefm_go)+len(earnings)+len(buyback)+len(w52)
+    if material:
+        print("\n[材料株フォロー候補]（翌日寄り買い・3日保有）")
+        for s in material:
+            print(f"  {s['ticker']} {s['name']}"
+                  f" 当日+{s['ret']}% 出来高{s['vol_ratio']}倍"
+                  f" 現値:{s['price']} SL:{s['sl']}")
+
+    total = len(mefm_go)+len(earnings)+len(buyback)+len(w52)+len(material)
     if total == 0:
         print("\n本日は全戦略でシグナルなし → 待機")
 
-    # LINE送信
-    msg = build_message(today, market, mefm, earnings, buyback, w52)
+    msg = build_message(today, market, mefm, earnings, buyback, w52, material)
     send_line(msg, LINE_CHANNEL_ACCESS_TOKEN or LINE_TOKEN)
     print("\nLINE通知送信完了")
 
