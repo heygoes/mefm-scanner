@@ -2,70 +2,25 @@ name: Daytrade Scanner
 
 on:
   schedule:
-    # 毎朝8:50 JST（UTC 23:50 前日）
     - cron: '50 23 * * 0-4'
-    # 毎日11:30 JST（UTC 2:30）
     - cron: '30 2 * * 1-5'
   workflow_dispatch:
 
 jobs:
   morning-scan:
-    name: 朝スキャン（8:50）
+    name: 朝スキャン
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '50 23 * * 0-4'
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      - name: Install dependencies
+      - name: Install
         run: pip install yfinance pandas numpy requests
-      - name: Run morning scanner
+      - name: Run
         env:
           LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
         run: python daytrade_morning.py
-      - name: Save candidates
-        uses: actions/upload-artifact@v3
-        with:
-          name: daytrade-candidates
-          path: daytrade_candidates.json
-          retention-days: 1
 
-  result-scan:
-    name: 結果スキャン（11:30）
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 2 * * 1-5'
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-      - name: Install dependencies
-        run: pip install yfinance pandas numpy requests
-      - name: Download candidates
-        uses: actions/download-artifact@v3
-        with:
-          name: daytrade-candidates
-        continue-on-error: true
-      - name: Restore records
-        run: |
-          if [ -f daytrade_records.json ]; then
-            echo "既存記録を使用"
-          else
-            echo "[]" > daytrade_records.json
-          fi
-      - name: Run result scanner
-        env:
-          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
-          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-        run: python daytrade_result.py
-      - name: Commit records
-        run: |
-          git config --global user.email "action@github.com"
-          git config --global user.name "GitHub Action"
-          git add daytrade_records.json || true
-          git diff --staged --quiet || git commit -m "Update daytrade records $(date '+%Y-%m-%d')"
-          git push || true
