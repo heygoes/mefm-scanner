@@ -195,33 +195,11 @@ def main():
                             ("long",  down_move, 2.0),
                         ]:
                             if move < threshold: continue
-                            if direction == "short":
-                                ep   = morning_h
-                                sl_p = ep * 1.007
-                                tp_p = ep * 0.985
-                            else:
-                                ep   = morning_l
-                                sl_p = ep * 0.993
-                                tp_p = ep * 1.015
-
+                            ep   = morning_h if direction=="short" else morning_l
+                            # SLなし・11:30終値決済
                             ex_p = float(after["Close"].iloc[-1])
-                            hit_sl = hit_tp = False
-
-                            for _, bar in after.iterrows():
-                                hi = float(bar["High"]); lo = float(bar["Low"])
-                                if direction == "short":
-                                    if hi >= sl_p: ex_p=sl_p; hit_sl=True; break
-                                    if lo <= tp_p: ex_p=tp_p; hit_tp=True; break
-                                else:
-                                    if lo <= sl_p: ex_p=sl_p; hit_sl=True; break
-                                    if hi >= tp_p: ex_p=tp_p; hit_tp=True; break
-
-                            pnl = ((ep-ex_p)/ep - COST_RATE) if direction=="short" \
-                                  else ((ex_p-ep)/ep - COST_RATE)
-
-                            move_pct   = move
-                            exit_reason = "SL到達" if hit_sl else "TP到達" if hit_tp else "時間切れ(11:30)"
-
+                            pnl  = ((ep-ex_p)/ep - COST_RATE) if direction=="short" \
+                                   else ((ex_p-ep)/ep - COST_RATE)
                             results.append({
                                 "date":        today_str,
                                 "ticker":      ticker,
@@ -231,7 +209,7 @@ def main():
                                 "ep":          round(ep, 0),
                                 "ex_p":        round(ex_p, 0),
                                 "pnl_pct":     round(pnl*100, 3),
-                                "exit_reason": exit_reason,
+                                "exit_reason": "11:30終値決済",
                                 "data_src":    data_src,
                                 "strategy":    "C",
                             })
@@ -255,21 +233,11 @@ def main():
 
                 for direction, move in [("short", up_move), ("long", down_move)]:
                     if move < 2.0: continue
-                    ep_d = cur_h if direction=="short" else cur_l
-                    sl_p = ep_d*1.007 if direction=="short" else ep_d*0.993
-                    tp_p = ep_d*0.985 if direction=="short" else ep_d*1.015
-
-                    hit_sl_d = (cur_h >= sl_p) if direction=="short" else (cur_l <= sl_p)
-                    hit_tp_d = (cur_l <= tp_p) if direction=="short" else (cur_h >= tp_p)
-
-                    if hit_sl_d: ex_p_d = sl_p
-                    elif hit_tp_d: ex_p_d = tp_p
-                    else: ex_p_d = cur_c
-
+                    ep_d  = cur_h if direction=="short" else cur_l
+                    # SLなし・終値決済
+                    ex_p_d = cur_c
                     pnl_d = ((ep_d-ex_p_d)/ep_d - COST_RATE) if direction=="short" \
                             else ((ex_p_d-ep_d)/ep_d - COST_RATE)
-                    exit_r = "SL到達" if hit_sl_d else "TP到達" if hit_tp_d else "時間切れ"
-
                     results.append({
                         "date":        today_str,
                         "ticker":      ticker,
@@ -279,7 +247,7 @@ def main():
                         "ep":          round(ep_d, 0),
                         "ex_p":        round(ex_p_d, 0),
                         "pnl_pct":     round(pnl_d*100, 3),
-                        "exit_reason": exit_r,
+                        "exit_reason": "11:30終値決済(日足代替)",
                         "data_src":    "日足代替",
                         "strategy":    "C",
                     })
@@ -362,3 +330,4 @@ def main():
     print("\n結果スキャン完了")
 
 main()
+
